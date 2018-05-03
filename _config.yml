@@ -1,2 +1,3 @@
 name: Samartin2's Github Projects
 markdown: kramdown
+permalink: /blog/:year/:month/:day/:title
