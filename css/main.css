@@ -1,7 +1,6 @@
 body{
     margin: 60px auto;
     width: 80%;
-    overflow: hidden;
 }
 nav ul, footer ul{
     font-size: 1em;
@@ -32,9 +31,6 @@ p, ul{
     font-size: 1.5em;
     line-height: 1.4em;
     color: #333;
-}
-div.container{
-    overflow: visible;
 }
 footer{
     border-top: 1px solid #d5d5d5;
