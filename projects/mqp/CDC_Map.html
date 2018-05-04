@@ -1,0 +1,694 @@
+
+<script src="https://cdn.pydata.org/bokeh/release/bokeh-0.12.5.min.js" type="text/javascript"></script>
+<script src="https://cdn.pydata.org/bokeh/release/bokeh-widgets-0.12.5.min.js" type="text/javascript"></script>
+<script src="https://code.jquery.com/jquery-2.1.4.min.js" type="text/javascript"></script>
+<script src="https://code.jquery.com/ui/1.10.4/jquery-ui.min.js" type="text/javascript"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.20/require.min.js" type="text/javascript"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.3/underscore-min.js" type="text/javascript"></script>
+<script type="text/javascript">function HoloViewsWidget(){
+}
+
+HoloViewsWidget.comms = {};
+HoloViewsWidget.comm_state = {};
+
+HoloViewsWidget.prototype.init_slider = function(init_val){
+	if(this.load_json) {
+		this.from_json()
+	} else {
+		this.update_cache();
+	}
+}
+
+HoloViewsWidget.prototype.populate_cache = function(idx){
+    this.cache[idx].html(this.frames[idx]);
+    if (this.embed) {
+        delete this.frames[idx];
+    }
+}
+
+HoloViewsWidget.prototype.process_error = function(msg){
+
+}
+
+HoloViewsWidget.prototype.from_json = function() {
+	var data_url = this.json_path + this.id + '.json';
+	$.getJSON(data_url, $.proxy(function(json_data) {
+		this.frames = json_data;
+		this.update_cache();
+		this.update(0);
+	}, this));
+}
+
+HoloViewsWidget.prototype.dynamic_update = function(current){
+	if (current === undefined) {
+		return
+	}
+	if(this.dynamic) {
+		current = JSON.stringify(current);
+	}
+	function callback(initialized, msg){
+		/* This callback receives data from Python as a string
+		   in order to parse it correctly quotes are sliced off*/
+		if (msg.content.ename != undefined) {
+			this.process_error(msg);
+		}
+		if (msg.msg_type != "execute_result") {
+			console.log("Warning: HoloViews callback returned unexpected data for key: (", current, ") with the following content:", msg.content)
+			this.time = undefined;
+			this.wait = false;
+			return
+		}
+		this.timed = (Date.now() - this.time) * 1.1;
+		if (msg.msg_type == "execute_result") {
+			if (msg.content.data['text/plain'].includes('Complete')) {
+				this.wait = false;
+				if (this.queue.length > 0) {
+					this.time = Date.now();
+					this.dynamic_update(this.queue[this.queue.length-1]);
+					this.queue = [];
+				}
+				return
+			}
+		}
+	}
+	this.current = current;
+	if ((window.Jupyter !== undefined) && (Jupyter.notebook.kernel != null)) {
+		var kernel = Jupyter.notebook.kernel;
+		callbacks = {iopub: {output: $.proxy(callback, this, this.initialized)}};
+		var cmd = "holoviews.plotting.widgets.NdWidget.widgets['" + this.id + "'].update(" + current + ")";
+		kernel.execute("import holoviews;" + cmd, callbacks, {silent : false});
+	}
+}
+
+HoloViewsWidget.prototype.update_cache = function(force){
+    var frame_len = Object.keys(this.frames).length;
+    for (var i=0; i<frame_len; i++) {
+        if(!this.load_json || this.dynamic)  {
+            frame = Object.keys(this.frames)[i];
+        } else {
+            frame = i;
+        }
+        if(!(frame in this.cache) || force) {
+			if ((frame in this.cache) && force) { this.cache[frame].remove() }
+			this.cache[frame] = $('<div />').appendTo("#"+"_anim_img"+this.id).hide();
+			var cache_id = "_anim_img"+this.id+"_"+frame;
+			this.cache[frame].attr("id", cache_id);
+			this.populate_cache(frame);
+        }
+    }
+}
+
+HoloViewsWidget.prototype.update = function(current){
+    if(current in this.cache) {
+        $.each(this.cache, function(index, value) {
+            value.hide();
+        });
+        this.cache[current].show();
+		this.wait = false;
+    }
+}
+
+HoloViewsWidget.prototype.init_comms = function() {
+	if ((window.Jupyter !== undefined) && (Jupyter.notebook.kernel !== undefined)) {
+		var widget = this;
+		comm_manager = Jupyter.notebook.kernel.comm_manager;
+        comm_manager.register_target(this.id, function (comm) {
+			comm.on_msg(function (msg) { widget.process_msg(msg) });
+		});
+	}
+}
+
+HoloViewsWidget.prototype.process_msg = function(msg) {
+}
+
+function SelectionWidget(frames, id, slider_ids, keyMap, dim_vals, notFound, load_json, mode, cached, json_path, dynamic){
+    this.frames = frames;
+    this.id = id;
+    this.slider_ids = slider_ids;
+    this.keyMap = keyMap
+    this.current_frame = 0;
+    this.current_vals = dim_vals;
+    this.load_json = load_json;
+    this.mode = mode;
+    this.notFound = notFound;
+    this.cached = cached;
+    this.dynamic = dynamic;
+    this.cache = {};
+	this.json_path = json_path;
+    this.init_slider(this.current_vals[0]);
+	this.queue = [];
+	this.wait = false;
+	if (!this.cached || this.dynamic) {
+		this.init_comms()
+	}
+}
+
+SelectionWidget.prototype = new HoloViewsWidget;
+
+
+SelectionWidget.prototype.get_key = function(current_vals) {
+	var key = "(";
+    for (var i=0; i<this.slider_ids.length; i++)
+    {
+        val = this.current_vals[i];
+        if (!(typeof val === 'string')) {
+            if (val % 1 === 0) { val = val.toFixed(1); }
+            else { val = val.toFixed(10); val = val.slice(0, val.length-1);}
+        }
+        key += "'" + val + "'";
+        if(i != this.slider_ids.length-1) { key += ', ';}
+        else if(this.slider_ids.length == 1) { key += ',';}
+    }
+    key += ")";
+	return this.keyMap[key];
+}
+
+SelectionWidget.prototype.set_frame = function(dim_val, dim_idx){
+	this.current_vals[dim_idx] = dim_val;
+    var current = this.get_key(this.current_vals);
+    if(current === undefined && !this.dynamic) {
+        return
+    }
+	if (this.dynamic || !this.cached) {
+		if (this.time === undefined) {
+			// Do nothing the first time
+		} else if ((this.timed === undefined) || ((this.time + this.timed) > Date.now())) {
+			var key = this.current_vals;
+			if (!this.dynamic) {
+				key = this.get_key(key);
+			}
+			this.queue.push(key);
+			return
+		}
+	}
+	this.queue = [];
+	this.time = Date.now();
+	this.current_frame = current;
+    if(this.dynamic) {
+        this.dynamic_update(this.current_vals)
+    } else if(this.cached) {
+        this.update(current)
+    } else {
+        this.dynamic_update(current)
+    }
+}
+
+
+/* Define the ScrubberWidget class */
+function ScrubberWidget(frames, num_frames, id, interval, load_json, mode, cached, json_path, dynamic){
+    this.slider_id = "_anim_slider" + id;
+    this.loop_select_id = "_anim_loop_select" + id;
+    this.id = id;
+    this.interval = interval;
+    this.current_frame = 0;
+    this.direction = 0;
+    this.dynamic = dynamic;
+    this.timer = null;
+    this.load_json = load_json;
+    this.mode = mode;
+    this.cached = cached;
+    this.frames = frames;
+    this.cache = {};
+    this.length = num_frames;
+	this.json_path = json_path;
+    document.getElementById(this.slider_id).max = this.length - 1;
+    this.init_slider(0);
+	this.wait = false;
+	this.queue = [];
+	if (!this.cached || this.dynamic) {
+		this.init_comms()
+	}
+}
+
+ScrubberWidget.prototype = new HoloViewsWidget;
+
+ScrubberWidget.prototype.set_frame = function(frame){
+	this.current_frame = frame;
+	widget = document.getElementById(this.slider_id);
+    if (widget === null) {
+        this.pause_animation();
+        return
+    }
+    widget.value = this.current_frame;
+    if(this.cached) {
+        this.update(frame)
+    } else {
+        this.dynamic_update(frame)
+    }
+}
+
+
+ScrubberWidget.prototype.process_error = function(msg){
+	if (msg.content.ename === 'StopIteration') {
+		this.pause_animation();
+		this.stopped = true;
+		var keys = Object.keys(this.frames)
+		this.length = keys.length;
+		document.getElementById(this.slider_id).max = this.length-1;
+		document.getElementById(this.slider_id).value = this.length-1;
+		this.current_frame = this.length-1;
+	}
+}
+
+
+ScrubberWidget.prototype.get_loop_state = function(){
+    var button_group = document[this.loop_select_id].state;
+    for (var i = 0; i < button_group.length; i++) {
+        var button = button_group[i];
+        if (button.checked) {
+            return button.value;
+        }
+    }
+    return undefined;
+}
+
+
+ScrubberWidget.prototype.next_frame = function() {
+	this.set_frame(Math.min(this.length - 1, this.current_frame + 1));
+}
+
+ScrubberWidget.prototype.previous_frame = function() {
+    this.set_frame(Math.max(0, this.current_frame - 1));
+}
+
+ScrubberWidget.prototype.first_frame = function() {
+    this.set_frame(0);
+}
+
+ScrubberWidget.prototype.last_frame = function() {
+    this.set_frame(this.length - 1);
+}
+
+ScrubberWidget.prototype.slower = function() {
+    this.interval /= 0.7;
+    if(this.direction > 0){this.play_animation();}
+    else if(this.direction < 0){this.reverse_animation();}
+}
+
+ScrubberWidget.prototype.faster = function() {
+    this.interval *= 0.7;
+    if(this.direction > 0){this.play_animation();}
+    else if(this.direction < 0){this.reverse_animation();}
+}
+
+ScrubberWidget.prototype.anim_step_forward = function() {
+    if(this.current_frame < this.length - 1){
+        this.next_frame();
+    }else{
+        var loop_state = this.get_loop_state();
+        if(loop_state == "loop"){
+            this.first_frame();
+        }else if(loop_state == "reflect"){
+            this.last_frame();
+            this.reverse_animation();
+        }else{
+            this.pause_animation();
+            this.last_frame();
+        }
+    }
+}
+
+ScrubberWidget.prototype.anim_step_reverse = function() {
+    if(this.current_frame > 0){
+        this.previous_frame();
+    } else {
+        var loop_state = this.get_loop_state();
+        if(loop_state == "loop"){
+            this.last_frame();
+        }else if(loop_state == "reflect"){
+            this.first_frame();
+            this.play_animation();
+        }else{
+            this.pause_animation();
+            this.first_frame();
+        }
+    }
+}
+
+ScrubberWidget.prototype.pause_animation = function() {
+    this.direction = 0;
+    if (this.timer){
+        clearInterval(this.timer);
+        this.timer = null;
+    }
+}
+
+ScrubberWidget.prototype.play_animation = function() {
+    this.pause_animation();
+    this.direction = 1;
+    var t = this;
+    if (!this.timer) this.timer = setInterval(function(){t.anim_step_forward();}, this.interval);
+}
+
+ScrubberWidget.prototype.reverse_animation = function() {
+    this.pause_animation();
+    this.direction = -1;
+    var t = this;
+    if (!this.timer) this.timer = setInterval(function(){t.anim_step_reverse();}, this.interval);
+}
+
+function extend(destination, source) {
+    for (var k in source) {
+        if (source.hasOwnProperty(k)) {
+            destination[k] = source[k];
+        }
+    }
+    return destination;
+}
+
+function update_widget(widget, values) {
+	if (widget.hasClass("ui-slider")) {
+		widget.slider('option',
+					  {'min': 0, 'max': values.length-1,
+					   'dim_vals': values, 'value': 0,
+					   'dim_labels': values})
+		widget.slider('option', 'slide').call(widget, event, {'value': 0})
+	} else {
+		widget.empty();
+		for (var i=0; i<values.length; i++){
+			widget.append($("<option>", {
+				value: i,
+				text: values[i]
+			}))};
+		widget.data('values', values);
+		widget.data('value', 0);
+		widget.trigger("change");
+	};
+}
+
+// Define Bokeh specific subclasses
+function BokehSelectionWidget() {
+	SelectionWidget.apply(this, arguments);
+}
+
+function BokehScrubberWidget() {
+	ScrubberWidget.apply(this, arguments);
+}
+
+// Let them inherit from the baseclasses
+BokehSelectionWidget.prototype = Object.create(SelectionWidget.prototype);
+BokehScrubberWidget.prototype = Object.create(ScrubberWidget.prototype);
+
+// Define methods to override on widgets
+var BokehMethods = {
+	update_cache : function(){
+		$.each(this.frames, $.proxy(function(index, frame) {
+			this.frames[index] = JSON.parse(frame);
+		}, this));
+	},
+	update : function(current){
+		if (current === undefined) {
+			var data = undefined;
+		} else {
+			var data = this.frames[current];
+		}
+		if (data !== undefined) {
+			var doc = Bokeh.index[data.root].model.document;
+			doc.apply_json_patch(data.patch);
+		}
+	},
+	init_comms : function() {
+	}
+}
+
+// Extend Bokeh widgets with backend specific methods
+extend(BokehSelectionWidget.prototype, BokehMethods);
+extend(BokehScrubberWidget.prototype, BokehMethods);
+
+// Define MPL specific subclasses
+function MPLSelectionWidget() {
+    SelectionWidget.apply(this, arguments);
+}
+
+function MPLScrubberWidget() {
+    ScrubberWidget.apply(this, arguments);
+}
+
+// Let them inherit from the baseclasses
+MPLSelectionWidget.prototype = Object.create(SelectionWidget.prototype);
+MPLScrubberWidget.prototype = Object.create(ScrubberWidget.prototype);
+
+// Define methods to override on widgets
+var MPLMethods = {
+    init_slider : function(init_val){
+        if(this.load_json) {
+            this.from_json()
+        } else {
+            this.update_cache();
+        }
+        this.update(0);
+        if(this.mode == 'nbagg') {
+            this.set_frame(init_val, 0);
+        }
+    },
+    populate_cache : function(idx){
+        var cache_id = "_anim_img"+this.id+"_"+idx;
+        this.cache[idx].html(this.frames[idx]);
+        if (this.embed) {
+            delete this.frames[idx];
+        }
+    },
+    process_msg : function(msg) {
+        if (!(this.mode == 'nbagg')) {
+            var data = msg.content.data;
+            this.frames[this.current] = data;
+            this.update_cache(true);
+            this.update(this.current);
+        }
+    }
+}
+// Extend MPL widgets with backend specific methods
+extend(MPLSelectionWidget.prototype, MPLMethods);
+extend(MPLScrubberWidget.prototype, MPLMethods);
+</script>
+
+<link rel="stylesheet" href="https://cdn.pydata.org/bokeh/release/bokeh-0.12.5.min.css">
+<link rel="stylesheet" href="https://cdn.pydata.org/bokeh/release/bokeh-widgets-0.12.5.min.css">
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.10.4/themes/smoothness/jquery-ui.css">
+<style>div.bk-hbox {
+    display: flex;
+    justify-content: center;
+}
+
+div.bk-hbox div.bk-plot {
+    padding: 8px;
+}
+
+div.bk-hbox div.bk-data-table {
+    padding: 20px;
+}
+
+div.hololayout {
+    display: flex;
+    align-items: center;
+    margin: 0;
+}
+
+div.holoframe {
+	width: 75%;
+}
+
+div.holowell {
+    display: flex;
+    align-items: center;
+    margin: 0;
+}
+
+form.holoform {
+    background-color: #fafafa;
+    border-radius: 5px;
+    overflow: hidden;
+	padding-left: 0.8em;
+    padding-right: 0.8em;
+    padding-top: 0.4em;
+    padding-bottom: 0.4em;
+}
+
+div.holowidgets {
+    padding-right: 0;
+	width: 25%;
+}
+
+div.holoslider {
+    min-height: 0 !important;
+    height: 0.8em;
+    width: 60%;
+}
+
+div.holoformgroup {
+    padding-top: 0.5em;
+    margin-bottom: 0.5em;
+}
+
+div.hologroup {
+    padding-left: 0;
+    padding-right: 0.8em;
+    width: 50%;
+}
+
+.holoselect {
+    width: 92%;
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.holotext {
+    width: 100%;
+    padding-left:  0.5em;
+    padding-right: 0;
+}
+
+.holowidgets .ui-resizable-se {
+	visibility: hidden
+}
+
+.holoframe > .ui-resizable-se {
+	visibility: hidden
+}
+
+.holowidgets .ui-resizable-s {
+	visibility: hidden
+}
+</style><div style='display: table; margin: 0 auto;'>
+
+    <div class="bk-root">
+        <div class="bk-plotdiv" id="6e9d153f-a05b-49af-b984-3dba1c928c0a"></div>
+    </div>
+<script type="text/javascript">
+  
+  (function(global) {
+    function now() {
+      return new Date();
+    }
+  
+    var force = false;
+  
+    if (typeof (window._bokeh_onload_callbacks) === "undefined" || force === true) {
+      window._bokeh_onload_callbacks = [];
+      window._bokeh_is_loading = undefined;
+    }
+  
+  
+    
+    if (typeof (window._bokeh_timeout) === "undefined" || force === true) {
+      window._bokeh_timeout = Date.now() + 0;
+      window._bokeh_failed_load = false;
+    }
+  
+    var NB_LOAD_WARNING = {'data': {'text/html':
+       "<div style='background-color: #fdd'>\n"+
+       "<p>\n"+
+       "BokehJS does not appear to have successfully loaded. If loading BokehJS from CDN, this \n"+
+       "may be due to a slow or bad network connection. Possible fixes:\n"+
+       "</p>\n"+
+       "<ul>\n"+
+       "<li>re-rerun `output_notebook()` to attempt to load from CDN again, or</li>\n"+
+       "<li>use INLINE resources instead, as so:</li>\n"+
+       "</ul>\n"+
+       "<code>\n"+
+       "from bokeh.resources import INLINE\n"+
+       "output_notebook(resources=INLINE)\n"+
+       "</code>\n"+
+       "</div>"}};
+  
+    function display_loaded() {
+      if (window.Bokeh !== undefined) {
+        var el = document.getElementById("6e9d153f-a05b-49af-b984-3dba1c928c0a");
+        el.textContent = "BokehJS " + Bokeh.version + " successfully loaded.";
+      } else if (Date.now() < window._bokeh_timeout) {
+        setTimeout(display_loaded, 100)
+      }
+    }
+  
+    function run_callbacks() {
+      window._bokeh_onload_callbacks.forEach(function(callback) { callback() });
+      delete window._bokeh_onload_callbacks
+      console.info("Bokeh: all callbacks have finished");
+    }
+  
+    function load_libs(js_urls, callback) {
+      window._bokeh_onload_callbacks.push(callback);
+      if (window._bokeh_is_loading > 0) {
+        console.log("Bokeh: BokehJS is being loaded, scheduling callback at", now());
+        return null;
+      }
+      if (js_urls == null || js_urls.length === 0) {
+        run_callbacks();
+        return null;
+      }
+      console.log("Bokeh: BokehJS not loaded, scheduling load and callback at", now());
+      window._bokeh_is_loading = js_urls.length;
+      for (var i = 0; i < js_urls.length; i++) {
+        var url = js_urls[i];
+        var s = document.createElement('script');
+        s.src = url;
+        s.async = false;
+        s.onreadystatechange = s.onload = function() {
+          window._bokeh_is_loading--;
+          if (window._bokeh_is_loading === 0) {
+            console.log("Bokeh: all BokehJS libraries loaded");
+            run_callbacks()
+          }
+        };
+        s.onerror = function() {
+          console.warn("failed to load library " + url);
+        };
+        console.log("Bokeh: injecting script tag for BokehJS library: ", url);
+        document.getElementsByTagName("head")[0].appendChild(s);
+      }
+    };var element = document.getElementById("6e9d153f-a05b-49af-b984-3dba1c928c0a");
+    if (element == null) {
+      console.log("Bokeh: ERROR: autoload.js configured with elementid '6e9d153f-a05b-49af-b984-3dba1c928c0a' but no matching script tag was found. ")
+      return false;
+    }
+  
+    var js_urls = [];
+  
+    var inline_js = [
+      function(Bokeh) {
+        (function() {
+          var fn = function() {
+            var docs_json = {"0197111c-4760-480c-9f67-90ce06efac0a":{"roots":{"references":[{"attributes":{"callback":null,"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},"renderers":[{"id":"ab4cfc2a-2081-4cb3-ac44-bb9f4f8b8cbe","type":"GlyphRenderer"}],"tooltips":[["Longitude","@{Longitude}"],["Latitude","@{Latitude}"],["Hires","@{Hires}"],["City","@{City}"],["Country","@{Country}"]]},"id":"29dde267-cedd-40c5-bbab-ab16a5b72f01","type":"HoverTool"},{"attributes":{"plot":null,"text":"","text_color":{"value":"black"},"text_font_size":{"value":"12pt"}},"id":"36c24533-c581-4980-94c1-f2cd15777247","type":"Title"},{"attributes":{"dimension":1,"grid_line_color":{"value":null},"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},"ticker":{"id":"ba3d8d36-0b82-47fb-becb-2cf463e21102","type":"BasicTicker"}},"id":"c0988110-e1ea-4b0a-93b3-10d4dba167d6","type":"Grid"},{"attributes":{"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"}},"id":"a5b761e0-4731-4996-acbb-1c2fb9ad37d3","type":"PanTool"},{"attributes":{"callback":null,"end":13522390.551226312,"start":-17572709.169111375},"id":"0cf7ee0f-3166-4957-94d2-b0156ce4a796","type":"Range1d"},{"attributes":{"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"}},"id":"6da759c2-6650-4a73-9076-0f90b6e92fce","type":"SaveTool"},{"attributes":{"url":"https://maps.wikimedia.org/osm-intl/{Z}/{X}/{Y}@2x.png"},"id":"5a337361-4a5e-47f7-af5a-2e8b20dce57e","type":"WMTSTileSource"},{"attributes":{"fill_alpha":{"value":0.2},"fill_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"line_alpha":{"value":0.2},"line_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"size":{"field":"size_Hires","units":"screen"},"x":{"field":"Longitude"},"y":{"field":"Latitude"}},"id":"d45d2988-4e0a-4665-85f2-bd6611b23885","type":"Circle"},{"attributes":{"callback":null,"end":6865730.002280665,"start":-2698731.7512557814},"id":"9ede838d-7ae3-406c-ab39-081639afd938","type":"Range1d"},{"attributes":{},"id":"99606597-4358-4522-b87e-3a4ecc0df0d3","type":"BasicTickFormatter"},{"attributes":{"axis_label":"Longitude","formatter":{"id":"99606597-4358-4522-b87e-3a4ecc0df0d3","type":"BasicTickFormatter"},"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},"ticker":{"id":"2d7c879a-efff-46f3-8dca-bbbefba0d028","type":"BasicTicker"},"visible":false},"id":"f2e34b4e-e3f6-4cc6-aa14-bc6c20dfb152","type":"LinearAxis"},{"attributes":{"background_fill_color":{"value":"white"},"below":[{"id":"f2e34b4e-e3f6-4cc6-aa14-bc6c20dfb152","type":"LinearAxis"}],"left":[{"id":"50000d67-819d-480b-af14-8184493c009d","type":"LinearAxis"}],"min_border_bottom":10,"min_border_left":10,"min_border_right":10,"min_border_top":10,"plot_height":300,"renderers":[{"id":"f2e34b4e-e3f6-4cc6-aa14-bc6c20dfb152","type":"LinearAxis"},{"id":"19430f17-8072-43e3-97e4-fb0ca159fcce","type":"Grid"},{"id":"50000d67-819d-480b-af14-8184493c009d","type":"LinearAxis"},{"id":"c0988110-e1ea-4b0a-93b3-10d4dba167d6","type":"Grid"},{"id":"c7d0dacd-72a8-4523-8d77-35f6c5c655ef","type":"BoxAnnotation"},{"id":"dd5da94f-5248-4b64-8c51-1d392daf11b3","type":"TileRenderer"},{"id":"ab4cfc2a-2081-4cb3-ac44-bb9f4f8b8cbe","type":"GlyphRenderer"}],"title":{"id":"36c24533-c581-4980-94c1-f2cd15777247","type":"Title"},"tool_events":{"id":"0a49e46e-dead-4433-a373-a4a9bb90c15c","type":"ToolEvents"},"toolbar":{"id":"98953dde-7449-4eb4-bd41-403386d88d7e","type":"Toolbar"},"x_range":{"id":"0cf7ee0f-3166-4957-94d2-b0156ce4a796","type":"Range1d"},"y_range":{"id":"9ede838d-7ae3-406c-ab39-081639afd938","type":"Range1d"}},"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},{"attributes":{"axis_label":"Latitude","formatter":{"id":"e7c4eabc-4c7e-4ffb-95b5-53fe5aa28cb4","type":"BasicTickFormatter"},"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},"ticker":{"id":"ba3d8d36-0b82-47fb-becb-2cf463e21102","type":"BasicTicker"},"visible":false},"id":"50000d67-819d-480b-af14-8184493c009d","type":"LinearAxis"},{"attributes":{"active_drag":"auto","active_scroll":"auto","active_tap":"auto","tools":[{"id":"254dd015-d002-42cc-bfce-9f476b7c9aa7","type":"BoxZoomTool"},{"id":"29dde267-cedd-40c5-bbab-ab16a5b72f01","type":"HoverTool"},{"id":"6da759c2-6650-4a73-9076-0f90b6e92fce","type":"SaveTool"},{"id":"a5b761e0-4731-4996-acbb-1c2fb9ad37d3","type":"PanTool"},{"id":"cb5cdd32-c5c5-4bd3-9f5b-31f9c8a32777","type":"WheelZoomTool"},{"id":"f57aed1d-4cef-4717-b0b3-5efe1991a6a5","type":"ResetTool"}]},"id":"98953dde-7449-4eb4-bd41-403386d88d7e","type":"Toolbar"},{"attributes":{"grid_line_color":{"value":null},"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"},"ticker":{"id":"2d7c879a-efff-46f3-8dca-bbbefba0d028","type":"BasicTicker"}},"id":"19430f17-8072-43e3-97e4-fb0ca159fcce","type":"Grid"},{"attributes":{"callback":null,"column_names":["Longitude","Latitude","Hires","size_Hires","City","Country"],"data":{"City":["Jericho","Burlington","Holyoke","Cambridge","Westborough","Worcester","Waltham","Laconia","Maynard","Boston","Raynham","Wilmington","Boxborough","Chelmsford","AIken","Windsor Locks","Rockford","Westford","Lexington","Hartford","Chapel Hill","Acton","Allentown","Hudson","Manchester","South Burlington","Seattle","Pittston","Sao Paulo","North Reading","Farmington","San Diego","Woburn","Cary","New Bedford","Norwood","Greensboro ","Concord","Merrimack","Pleasanton","Framingham","Austin","Andover","New York","White Plains","Southborough","Bristol","San Fransisco Bay Area","Los Angeles","Wilton","North Andover","Watertown ","Chicago","Northborough","Lowell","Orange","Lebanon","Nashua","Fort Wayne","Covington","Bloomington","Shang Hai","Charlton","Windsor","Paramus","Greenfield","Weston","Boca Raton","Upton","Quincy","Stow","Raleigh","Marlborough","Poway","Mclean","Natick","Shenzen","Peperell","San Antonio","Carrollton ","West Bridgewater","Beijing City","Needham","Brooklyn Center","New Haven","Wethersfield","Mountain View","Orleans","West Hartford","Beverly","Milford","Rockland","Auburn Hills","Ithaca","Manhattan","North Haven","Hudson","Lake Placid","Westbrook","Norwich","North Billerica","Hanson","Hopkinton","Providence","Southfield","Holliston","Chicopee","Cranston","Portsmouth","Somerville","City of Industry","South Windsor","Gardner","Wilmington","Modesto","Richmond","Kingsport","Indian Orchard, Springfield","Palaiseau","Portland","Groton","Simsbury","Madison","Greater Boston Area","Westwood","Waterbury","Springfield","Berlin","Wellesley","Billings","Norwalk","Minneapolis","Boulder","Cherry Point","Mt. Olive","West Glocester","Elizabethtown ","Honolulu","Plainville","Indianapolis","New London","Pittsfield","Taunton","North Kingstown","Schenectady","Hookset","Greater Grand Rapids","Milwaukee ","Greenville","Lynn","Redmond","Dudley","Venice ","Las Vegas","Orange County","Gloucester","Kirkland","Melville","Hunt Valley","Braintree","Fitchburg","Rutland","Lawrence","Southdridge","Poughkipsey","Rochester","Yorktown Heights","Littleton","Salem","St. Louis","Bedford","Billerica ","Hillsboro","Herndon","Oxford","Warwick","Baltimore","Atlanta","Dubai","Toronto","Baltimore","Falmouth","Londonderry","Meriden","Raleigh-Durham","North Clarendon","Watertown","Ashland","Woodcliff Lake","Brimfield","Leominster","Shelton","Dover","Santa Fe","West Boylston","Mason","North Adams","Danvers","Mansfield","Claremont","Shrewsbury","Mexico City","Denver","Seattle ","Spartanburg","Jaffrey","Jakarta","Rocky Hill","Winooski","Cape Canaveral","NaN","Syracuse","Pittsburgh","Newport","Cupertino","Peterborough","Smyrna","Brockton","Redo do beach","Santa Clara","Sandwich","Sturbridge","San Ramon","East Greenwich","Agawam","Katmandu","Allston","Lincoln","Bedford","Aberdeen","Valhalla","Dayville","Randolph","Drakesboro","Hingham","Kittery","North Attleboro","East Hartford","Middletown","Duryea","Yangon","Atkinson","Tewksbury","Sudbury","Portsmouth","Marietta","Rensselaer ","Danbury","Plainville","Palo Alto","Newburyport","Melbourne","Warren","Saudi Arabia - Yanbu","Al Jubial","Riyadh","Albany","Aiken","Foxborough","Fiskdale","Medford","Orlando","Stratford","Canton","Jackson","Sterling","Bristol","Singapore","Southington","Millbury","South Plainfield","Fall River","Glastonbury","Newington","Plymouth","Donostia","Fremont","Dallas","Bar Harbor ","Newton","Attleboro","Tuscon","Weymouth","East Haven","Westfield","Farmingville ","Tumacacori","Westminster","Pensacola","Suzhou","Chula Vista","Irvine","Cincinnati","RAF Mildenhall","Wright-Patterson AFB","Colorado Springs","Sunnyvale","Holden","West Warwick ","Eastford","Mt. Morris","Dedham","Stonington "],"Country":["United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Brazil","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","China","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","China","United States","United States","United States","United States","China","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","France","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States ","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United Arab Emirates","Canada","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Mexico","United States","United States","United States","United States","Indonesia","United States","United States","United States","Singapore","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Nepal","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Myanmar","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Saudi Arabia","Saudi Arabia","Saudi Arabia","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","Singapore","United States","United States","United States","United States","United States","United States","United States","Spain","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","United States","China","United States","United States","United States","United Kingdom","United States","United States","United States","United States","United States","United States","United States","United States","United States"],"Hires":[1,14,6,35,9,52,33,1,1,101,4,11,3,4,5,10,2,4,11,12,1,2,2,3,11,1,9,1,1,3,5,3,8,1,2,6,2,1,1,1,13,1,14,19,1,12,1,9,8,1,2,7,3,3,5,1,2,13,1,1,1,1,2,10,1,3,1,1,1,4,1,2,20,1,1,17,1,1,1,1,1,1,3,1,6,1,14,1,2,1,6,1,1,1,1,2,1,1,1,1,1,1,11,6,1,4,2,2,6,4,1,1,2,1,1,1,1,1,1,1,9,2,1,1,3,1,4,1,2,2,3,1,1,1,1,1,1,1,1,2,9,3,3,1,2,1,1,1,1,1,8,1,2,2,2,2,1,3,1,2,1,1,3,1,1,1,1,3,1,2,14,4,2,1,2,1,3,7,1,1,1,1,1,1,1,1,3,1,1,1,1,2,1,1,1,1,1,1,11,1,1,1,1,3,1,1,1,1,1,1,1,2,2,6,1,2,1,1,1,1,1,1,1,1,1,1,1,3,1,2,1,4,1,1,1,1,1,23,2,1,1,1,3,1,1,1,1,1,1,1,2,1,1,1,3,1,1,1,1,1,1,1,5,1,1,1,1,1,1,1,1,1,1,2,1,1,5,1,1,1,1,1,1,2,2,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,2,1,1],"Latitude":{"__ndarray__":"3HHqG/UAU0Ex7G94JfpTQRbq0mryzVNBgfjap9XmU0HipV+Xh9dTQdbg9gmD1lNB5qcqwEHnU0E3hpQ9RpJUQTa4DUCm71NBQRmc5tfkU0FV5c/MhKhTQctXyHaOAFRB7hHmrAH3U0GZ4oQdLghUQWrrKi/ESU5BXKCEXPOkU0Eol3kfxNdTQUJW3RclBVRBzL+SQg7xU0G0P9l9hI1TQZecaBUrXFBB2+8z00D3U0HJwzLsoOZSQSEOI1uA6VNB9EoODNNCVEEXjidUMyBVQWQos5j9C1dBDTabVO1NU0EVTLTv9ZZEwfO4urSHBFRBPBqB73uJU0HD9Mq3cG5NQY1PU8Zk9lNBj/BA2NlLUEE0mJlD9HpTQbS7cLh/zFNBkjL1H5dxUEFvpsQVnPNTQdt1IXLaL1RBnmOo86FJUUHzoRnY9thTQQcYeCYI/kpBIvvUstMQVEHZ/Of8lPVSQX4Ae/rCI1NBuoMtuNbcU0H7o7ZgIIBTQXQnk+AXWVFBf24M+3TKTkEf6LiHDDtTQTa3e8nLFlRB4BtaenDmU0GE1cK5NJ5TQUkszQri3lNB2ul6MCUNVEFup6P1FUdTQWS44QZzo1RBaqj2hqkgVEEyoBFdSipTQezrqaRBU05B4/IELSkaUkGge+4AufFLQaydTzfiw1NBW0oqOnuaU0EwNV1L4RZTQVVFOUtsBlRBx1YugNPlU0GU/fWe0DpHQaj99TOUyVNBU3v9sxXVU0FfuugALPBTQVWt9d4/SlBB/KC51MLiU0GjeLYzYa5NQfJOI8bC+VFB828MubTYU0FGuqRG7KhDQaOoHtryEVRBwL/gZbUqSkFRFIVKeNZRQeiA3xjMslNBFwyzp0+CUkELZmCgNNlTQTlvp4N4fVVBFLtjuV9LU0GnlxJpKYVTQevlbbm/I1FBk+0CZ1ORU0G3X7TKR41TQTeMtfURAlRBhsuyIYDEU0Gdbb7QJsNTQWm/t9ckFVRBTgs7HTHxU0FMrt7kqv9SQdHXfF9XV1NBjoyZPRXVU0G+ZDkcrwNVQZwc0herqFRBr6zfOK9qU0EAWewPugVUQR+uY0UGu1NBPQAerYjRU0FSnxeOTpZTQXmDu2qG9VNBpyDDDlbNU0GVLBUuzMVTQfIqObLdj1NBQV2/BiVOVEGiV6lj5OhTQfWbzAfuwU5BDo7RAsj6U0Fk6Yx+hwRUQcXcJkXwalJBj9G1w21GUUEteCHeXlVRQWD8ZHXHsVBBrSvNFqzGU0HeBLZpn8BXQReZNKhUplRBF447r2BRU0G/qDLyr5pTQSmPc2tWTlRB7VCHrYD+U0FNEvLyX89TQU74Sjqbb1NBRS3VUOC+U0E3z1fvz3hTQXVfn5mJ21NB25OmFQbrVUFxbeMa1y9TQTTNL/VYblVBGUjYCwaSUkG/fJtL6apPQV6E1DN/CVNB4s3P2NmjU0EScPh4a2JPQdCQ1SQyh0JBDGEbs7SAU0HgiLgFFm9SQX0toLo7UlNBDunQCxjyU0EEoTuyaqFTQfIGGRlqb1NB1XbbF+cnVEFnNv5a3FFUQb1J0LZ2PlRB4MMdxUFJVEH/cag6f51PQVklMzCN9FNBPFy2G+0WV0HZyzNsXbZTQSkA9C7VuE5B2Jo9kq9+UEGCsfcGyHJOQU2FRHGPClRBXpcPKWUXV0EjnJEiKAFTQd5/iUXKR1JBBpqGSnvOU0Gqjah+wgVUQdO7evA65lNBHmxrWwcYVEFjkp0rA7tTQafB0WlKhFNB0qkQky3bVEFwZ5p5+EVTQQc7GGvz/lNBszIjvxgkVEFQdQG2985RQbhFPoYR+FNB6PXWthECVEGIeQ3hhsJVQd4aCt2//lFBj71mbB3BU0GlyqRVQIRTQRxJPx62K1JBhmN26gV7TkFHGfFl3yFGQadmt1d7p1RBHEk/HrYrUkEWYA/R425TQQwzNW1yL1RBlo8DjLNsU0EVwc/3SFpQQW0mIRdKmFRB4+S/A5d2U0GsGqvmTtZTQf7ncpA9IlNB+1kikvbBU0EuT/O5Jv1TQZ4GEvmPTFNB8XRuS+5gVEGLle+r2D1QQfuod13T5VNB7NFSuYA1UkH/ZuuSHxdUQT30+DCEBFRBst2OGOq0U0F6ANMXEntUQdz5/9po21NBswyMonfUQEFnbNUx9mpSQehuUDT9C1dBt/yz0TK3T0FSueqK3CdUQWUqQIjRBCXBvyozwAN+U0EvZwvA7CNVQetK6xBpKklBjt7dcQhgAkFmXBbZoEpUQf77BDOhzlJB0Dy/qbllU0Gv6N4pIBtRQZv2WVFCMFRBlbOuJoVlUEHg8EplO7xTQZzz2V08lU5BwR80HmEfUUHZ37RJ04xTQforMzvkv1NBWL6R2cdZUUG/CuKHq3pTQQvHynAyulNBz07Xtx2ESEE/oL407+NTQQ7cx7QCo1NBs8LRiX87VEGx7cSGi0pSQT9MPeylKVNB52fgcHaZU0GilA1UvsdTQWlkMzy4DFFB+gc95nXTU0ErJCLGlFBUQbd2xeCQq1NB8F6Ps3mNU0H7uyp8NXBTQQwY7xObUVNBD64tSVgSPUGeMqySfCtUQRzyKcDHCVRBaBdkT0foU0FHOn+eBnZTQTsAGbRTsE5BGs/5g38OVEHGxoAq6FdTQWniqpqksFNBjyYm+2MrUUFa5JVsqCdUQbPgqqlA3khBkqI1pynPU0HBxDs2RAdFQZj3y0a3ykdBAJt62gysRUHYXMvf+Q9UQSrljfH9wVJB7vohkZa5U0EmsOiZCMFTQQiruW1u7VNBLqgaWIxOSUF3EObtezlTQYjTQV45x1NBtQg7GvKcUkFI0txDOvBTQUNdqWYxnlJBt34WTflfAkGl59NeLXVTQfalmZwozFNBZW92MXTiUkEFRhkodIRTQRQUYHw5glNBfD5ro1xSVEFNa+o18alTQRsN+O7pclRBv9l1o/c5UUG/dGegMH5NQdace9EdFFVBGp9lRHThU0EIDEYC6adTQX8xrZMi70xBy54JdPnPU0Fho1fR4kdTQZsegw1WwlNBkQcGOpUGU0Edx+frD0lMQeQCz4Q5AFRB8HvOet4kS0GrNQnkKgNMQd8C/gXkWk1B9UterS5qTkFPo7lJcRFSQfn4z4vQMFpBS9Kss391UkHsRi4ZzOtRQdPAt5hkIVFBZWfsap7jU0H5cZ1pxYRTQcZJnUOzoVNBvS/WyB9VVEFOOSQ9udNTQe2dlSJfT1NB","dtype":"float64","shape":[303]},"Longitude":{"__ndarray__":"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","dtype":"float64","shape":[303]},"size_Hires":{"__ndarray__":"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","dtype":"float64","shape":[303]}}},"id":"333a56db-970d-4dac-a8e4-5aa97f17eecf","type":"ColumnDataSource"},{"attributes":{"high":101,"low":1,"palette":["#7f00ff","#7d03fe","#7b06fe","#7909fe","#770cfe","#750ffe","#7312fe","#7115fe","#6f19fe","#6d1cfe","#6b1ffe","#6922fe","#6725fe","#6528fe","#632bfe","#612efd","#5f31fd","#5d35fd","#5b38fd","#593bfd","#573efd","#5541fc","#5344fc","#5147fc","#4f4afc","#4d4dfb","#4b50fb","#4953fb","#4756fb","#4559fa","#435cfa","#415ffa","#3f61fa","#3d64f9","#3b67f9","#396af9","#376df8","#3570f8","#3373f8","#3175f7","#2f78f7","#2d7bf6","#2b7ef6","#2980f6","#2783f5","#2586f5","#2388f4","#218bf4","#1f8ef3","#1d90f3","#1b93f3","#1995f2","#1798f2","#159af1","#139df1","#119ff0","#0fa2ef","#0da4ef","#0ba7ee","#09a9ee","#07abed","#05aeed","#03b0ec","#01b2ec","#00b4eb","#02b7ea","#04b9ea","#06bbe9","#08bde8","#0abfe8","#0cc1e7","#0ec3e6","#10c5e6","#12c7e5","#14c9e4","#16cbe4","#18cde3","#1acfe2","#1cd1e2","#1ed2e1","#20d4e0","#22d6df","#24d7df","#26d9de","#28dbdd","#2adcdc","#2cdedc","#2edfdb","#30e1da","#32e2d9","#34e4d8","#36e5d7","#38e6d7","#3ae8d6","#3ce9d5","#3eead4","#40ecd3","#42edd2","#44eed1","#46efd1","#48f0d0","#4af1cf","#4cf2ce","#4ef3cd","#50f4cc","#52f5cb","#54f6ca","#56f6c9","#58f7c8","#5af8c7","#5cf9c6","#5ef9c5","#60fac4","#62fac3","#64fbc2","#66fbc1","#68fcc0","#6afcbf","#6cfdbe","#6efdbd","#70fdbc","#72febb","#74feba","#76feb9","#78feb8","#7afeb7","#7cfeb5","#7efeb4","#80feb3","#82feb2","#84feb1","#86feb0","#88feaf","#8afeae","#8cfeac","#8efdab","#90fdaa","#92fda9","#94fca8","#96fca7","#98fba5","#9afba4","#9cfaa3","#9efaa2","#a0f9a1","#a2f99f","#a4f89e","#a6f79d","#a8f69c","#aaf69a","#acf599","#aef498","#b0f397","#b2f295","#b4f194","#b6f093","#b8ef92","#baee90","#bced8f","#beec8e","#c0ea8c","#c2e98b","#c4e88a","#c6e688","#c8e587","#cae486","#cce284","#cee183","#d0df82","#d2de80","#d4dc7f","#d6db7e","#d8d97c","#dad77b","#dcd67a","#ded478","#e0d277","#e2d175","#e4cf74","#e6cd73","#e8cb71","#eac970","#ecc76e","#eec56d","#f0c36c","#f2c16a","#f4bf69","#f6bd67","#f8bb66","#fab964","#fcb763","#feb461","#ffb260","#ffb05f","#ffae5d","#ffab5c","#ffa95a","#ffa759","#ffa457","#ffa256","#ff9f54","#ff9d53","#ff9a51","#ff9850","#ff954e","#ff934d","#ff904b","#ff8e4a","#ff8b48","#ff8847","#ff8645","#ff8344","#ff8042","#ff7e41","#ff7b3f","#ff783e","#ff753c","#ff733b","#ff7039","#ff6d38","#ff6a36","#ff6735","#ff6433","#ff6131","#ff5f30","#ff5c2e","#ff592d","#ff562b","#ff532a","#ff5028","#ff4d27","#ff4a25","#ff4724","#ff4422","#ff4120","#ff3e1f","#ff3b1d","#ff381c","#ff351a","#ff3119","#ff2e17","#ff2b15","#ff2814","#ff2512","#ff2211","#ff1f0f","#ff1c0e","#ff190c","#ff150a","#ff1209","#ff0f07","#ff0c06","#ff0904","#ff0603","#ff0301","#ff0000"]},"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"},{"attributes":{},"id":"e7c4eabc-4c7e-4ffb-95b5-53fe5aa28cb4","type":"BasicTickFormatter"},{"attributes":{"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"}},"id":"cb5cdd32-c5c5-4bd3-9f5b-31f9c8a32777","type":"WheelZoomTool"},{"attributes":{"tile_source":{"id":"5a337361-4a5e-47f7-af5a-2e8b20dce57e","type":"WMTSTileSource"}},"id":"dd5da94f-5248-4b64-8c51-1d392daf11b3","type":"TileRenderer"},{"attributes":{},"id":"2d7c879a-efff-46f3-8dca-bbbefba0d028","type":"BasicTicker"},{"attributes":{"fill_alpha":{"value":0.1},"fill_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"line_alpha":{"value":0.1},"line_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"size":{"field":"size_Hires","units":"screen"},"x":{"field":"Longitude"},"y":{"field":"Latitude"}},"id":"4b4bff24-95e4-4047-82ae-bd101368a999","type":"Circle"},{"attributes":{"data_source":{"id":"333a56db-970d-4dac-a8e4-5aa97f17eecf","type":"ColumnDataSource"},"glyph":{"id":"0b6b4ccc-e994-4c29-a7c3-972fba715eac","type":"Circle"},"hover_glyph":null,"muted_glyph":{"id":"d45d2988-4e0a-4665-85f2-bd6611b23885","type":"Circle"},"nonselection_glyph":{"id":"4b4bff24-95e4-4047-82ae-bd101368a999","type":"Circle"},"selection_glyph":null},"id":"ab4cfc2a-2081-4cb3-ac44-bb9f4f8b8cbe","type":"GlyphRenderer"},{"attributes":{},"id":"0a49e46e-dead-4433-a373-a4a9bb90c15c","type":"ToolEvents"},{"attributes":{"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"}},"id":"f57aed1d-4cef-4717-b0b3-5efe1991a6a5","type":"ResetTool"},{"attributes":{"match_aspect":true,"overlay":{"id":"c7d0dacd-72a8-4523-8d77-35f6c5c655ef","type":"BoxAnnotation"},"plot":{"id":"bde21197-760f-4826-b2c9-e9cd8f813541","subtype":"Figure","type":"Plot"}},"id":"254dd015-d002-42cc-bfce-9f476b7c9aa7","type":"BoxZoomTool"},{"attributes":{"fill_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"line_color":{"field":"Hires","transform":{"id":"6f70ee93-f1ba-479b-9ddd-672094e7e6c9","type":"LinearColorMapper"}},"size":{"field":"size_Hires","units":"screen"},"x":{"field":"Longitude"},"y":{"field":"Latitude"}},"id":"0b6b4ccc-e994-4c29-a7c3-972fba715eac","type":"Circle"},{"attributes":{"bottom_units":"screen","fill_alpha":{"value":0.5},"fill_color":{"value":"lightgrey"},"left_units":"screen","level":"overlay","line_alpha":{"value":1.0},"line_color":{"value":"black"},"line_dash":[4,4],"line_width":{"value":2},"plot":null,"render_mode":"css","right_units":"screen","top_units":"screen"},"id":"c7d0dacd-72a8-4523-8d77-35f6c5c655ef","type":"BoxAnnotation"},{"attributes":{},"id":"ba3d8d36-0b82-47fb-becb-2cf463e21102","type":"BasicTicker"}],"root_ids":["bde21197-760f-4826-b2c9-e9cd8f813541"]},"title":"Bokeh Application","version":"0.12.5"}};
+            var render_items = [{"docid":"0197111c-4760-480c-9f67-90ce06efac0a","elementid":"6e9d153f-a05b-49af-b984-3dba1c928c0a","modelid":"bde21197-760f-4826-b2c9-e9cd8f813541"}];
+            
+            Bokeh.embed.embed_items(docs_json, render_items);
+          };
+          if (document.readyState != "loading") fn();
+          else document.addEventListener("DOMContentLoaded", fn);
+        })();
+      },
+      function(Bokeh) {
+      }
+    ];
+  
+    function run_inline_js() {
+      
+      if ((window.Bokeh !== undefined) || (force === true)) {
+        for (var i = 0; i < inline_js.length; i++) {
+          inline_js[i](window.Bokeh);
+        }if (force === true) {
+          display_loaded();
+        }} else if (Date.now() < window._bokeh_timeout) {
+        setTimeout(run_inline_js, 100);
+      } else if (!window._bokeh_failed_load) {
+        console.log("Bokeh: BokehJS failed to load within specified timeout.");
+        window._bokeh_failed_load = true;
+      } else if (force !== true) {
+        var cell = $(document.getElementById("6e9d153f-a05b-49af-b984-3dba1c928c0a")).parents('.cell').data().cell;
+        cell.output_area.append_execute_result(NB_LOAD_WARNING)
+      }
+  
+    }
+  
+    if (window._bokeh_is_loading === 0) {
+      console.log("Bokeh: BokehJS loaded, going straight to plotting");
+      run_inline_js();
+    } else {
+      load_libs(js_urls, function() {
+        console.log("Bokeh: BokehJS plotting callback run at", now());
+        run_inline_js();
+      });
+    }
+  }(this));
+</script></div>
