@@ -32,6 +32,9 @@ p, ul{
     line-height: 1.4em;
     color: #333;
 }
+object{
+    height: 100%;
+}
 footer{
     border-top: 1px solid #d5d5d5;
     font-size: 0.8em;
