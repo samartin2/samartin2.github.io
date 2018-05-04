@@ -2,6 +2,7 @@ body{
     margin: 60px auto;
     width: 80%;
     height: 80%;
+    overflow: hidden;
 }
 nav ul, footer ul{
     font-size: 1em;
