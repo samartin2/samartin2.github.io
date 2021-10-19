@@ -1,0 +1,9 @@
+#foot {
+    background: rgb(33,37,41) !important;
+  }
+  
+  .foot-link a {
+    background: rgb(33,37,41) !important;
+    color: white !important;
+    text-decoration: none !important; 
+  }
